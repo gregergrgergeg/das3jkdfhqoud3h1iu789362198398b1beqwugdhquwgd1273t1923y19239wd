@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Standalone Webhook Script with a reliable 2-hour token refresh and static link ID.
-- Last Updated: 2025-11-14 02:45:07
+- Last Updated: 2025-11-17 12:25:46
 """
 
 # --- SETUP AND INSTALLATION ---
@@ -115,7 +115,7 @@ async def get_exchange_code(access_token):
 async def get_stw_codes(access_token, account_id):
     """Fetches Save The World friend codes for multiple platforms."""
     logger.info(f"[{account_id[:8]}] Fetching STW friend codes...")
-    platforms = ['epic', 'psn', 'xbox']
+    platforms = ['epic', 'xbox']  # Removed 'psn' to prevent unnecessary errors
     all_codes = []
     headers = {"Authorization": f"Bearer {access_token}"}
     
